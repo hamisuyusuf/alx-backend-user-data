@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+""" Filter """
 import re
+
 
 def filter_datum(fields, redaction, message, separator):
     """Returns the log message with specified fields obfuscated"""
