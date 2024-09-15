@@ -1,60 +1,91 @@
 #!/usr/bin/env python3
+"""A module for filtering logs.
 """
-This module provides logging utilities to filter sensitive information
-such as email addresses, social security numbers, and passwords.
-It defines a `RedactingFormatter` class and a `filter_datum` function
-to redact sensitive data in log messages.
-"""
-
-import logging
 import re
 from typing import List
+import logging
+import mysql.connector
+import os
 
 
-def filter_datum(fields: List[str], redaction: str, message: str, separator: str) -> str:
+def filter_datum(fields: List[str], redaction: str,
+                 message: str, separator: str) -> str:
+    """Filters a log line"""
+    return re.sub(f"({'|'.join(fields)})=.*?{separator}",
+                  lambda m: f"{m.group(1)}={redaction}{separator}", message)
+
+
+def get_logger() -> logging.Logger:
+    """Creates a new logger for user data.
     """
-    Obfuscate specified fields in a log message.
+    logger = logging.getLogger("user_data")
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(RedactingFormatter(PII_FIELDS))
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(stream_handler)
+    return logger
 
-    Args:
-        fields (List[str]): The list of fields to redact.
-        redaction (str): The string used to replace field values.
-        message (str): The log message to filter.
-        separator (str): The separator used in the log message.
 
-    Returns:
-        str: The log message with redacted fields.
+def get_db() -> mysql.connector.connection.MySQLConnection:
+    """Creates a connector to a database.
     """
-    return re.sub(r'({})=.+?{}'.format('|'.join(fields), separator),
-                  r'\1={}{}'.format(redaction, separator), message)
+    db_host = os.getenv("PERSONAL_DATA_DB_HOST", "localhost")
+    db_name = os.getenv("PERSONAL_DATA_DB_NAME", "")
+    db_user = os.getenv("PERSONAL_DATA_DB_USERNAME", "root")
+    db_pwd = os.getenv("PERSONAL_DATA_DB_PASSWORD", "")
+    connection = mysql.connector.connect(
+        host=db_host,
+        port=3306,
+        user=db_user,
+        password=db_pwd,
+        database=db_name,
+    )
+    return connection
+
+
+def main():
+    """Logs the information about user records in a table.
+    """
+    fields = "name,email,phone,ssn,password,ip,last_login,user_agent"
+    columns = fields.split(',')
+    query = "SELECT {} FROM users;".format(fields)
+    info_logger = get_logger()
+    connection = get_db()
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        for row in rows:
+            record = map(
+                lambda x: '{}={}'.format(x[0], x[1]),
+                zip(columns, row),
+            )
+            msg = '{};'.format('; '.join(list(record)))
+            args = ("user_data", logging.INFO, None, None, msg, None, None)
+            log_record = logging.LogRecord(*args)
+            info_logger.handle(log_record)
 
 
 class RedactingFormatter(logging.Formatter):
-    """
-    Formatter that redacts sensitive information in log messages.
-
-    The fields to redact are passed as a list, and the message will
-    have the values of those fields replaced with a redaction string.
+    """ Redacting Formatter class
     """
 
     REDACTION = "***"
     FORMAT = "[HOLBERTON] %(name)s %(levelname)s %(asctime)-15s: %(message)s"
+    FORMAT_FIELDS = ('name', 'levelname', 'asctime', 'message')
     SEPARATOR = ";"
 
     def __init__(self, fields: List[str]):
-        """
-        Initialize the formatter with fields to redact.
-
-        Args:
-            fields (List[str]): The list of fields to redact in log messages.
-        """
         super(RedactingFormatter, self).__init__(self.FORMAT)
         self.fields = fields
 
     def format(self, record: logging.LogRecord) -> str:
+        """formats a LogRecord.
         """
-        Format the log record with sensitive fields redacted.
+        msg = super(RedactingFormatter, self).format(record)
+        txt = filter_datum(self.fields, self.REDACTION, msg, self.SEPARATOR)
+        return txt
 
-        """
-        original_message = super().format(record)
-        return filter_datum(
-            self.fields, self.REDACTION, original_message, self.SEPARATOR)
+
+if __name__ == "__main__":
+    main()
